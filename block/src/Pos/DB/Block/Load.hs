@@ -17,6 +17,7 @@ module Pos.DB.Block.Load
 
 import           Universum
 
+import           Control.Exception (throw)
 import           Control.Lens (_Wrapped)
 import           Formatting (sformat, (%))
 
@@ -33,9 +34,10 @@ import           Pos.DB.BlockIndex (getHeader)
 import           Pos.DB.Class (MonadBlockDBRead, MonadDBRead, getBlock)
 import           Pos.DB.Error (DBError (..))
 import           Pos.DB.GState.Common (getTip)
-import           Pos.Reporting.Methods (MonadReporting, reportError)
+import           Pos.Reporting.Methods (MonadReporting, reportOrLogE)
 import           Pos.Util.Chrono (NewestFirst (..))
 import           Pos.Util.Util (maybeThrow)
+
 
 type LoadHeadersMode m =
     ( HasConfiguration
@@ -102,14 +104,14 @@ loadDataByDepth getter extraPredicate depth h = do
 -- | Load blunds starting from block with header hash equal to given hash
 -- and while @predicate@ is true.
 loadBlundsWhile
-    :: MonadDBRead m
+    :: forall ctx m . (MonadReporting ctx m, MonadDBRead m)
     => (Block -> Bool) -> HeaderHash -> m (NewestFirst [] Blund)
 loadBlundsWhile predicate = loadDataWhile getBlundThrow (predicate . fst)
 
 -- | Load blunds which have depth less than given (depth = number of
 -- blocks that will be returned).
 loadBlundsByDepth
-    :: MonadDBRead m
+    :: forall ctx m . (MonadReporting ctx m, MonadDBRead m)
     => BlockCount -> HeaderHash -> m (NewestFirst [] Blund)
 loadBlundsByDepth = loadDataByDepth getBlundThrow (const True)
 
@@ -151,14 +153,14 @@ loadHeadersByDepthWhile = loadDataByDepth getHeaderThrow
 -- | Load blunds from BlockDB starting from tip and while the @condition@ is
 -- true.
 loadBlundsFromTipWhile
-    :: MonadDBRead m
+    :: forall ctx m . (MonadReporting ctx m, MonadDBRead m)
     => (Block -> Bool) -> m (NewestFirst [] Blund)
 loadBlundsFromTipWhile condition = getTip >>= loadBlundsWhile condition
 
 -- | Load blunds from BlockDB starting from tip which have depth less than
 -- given.
 loadBlundsFromTipByDepth
-    :: MonadDBRead m
+    :: forall ctx m . (MonadReporting ctx m, MonadDBRead m)
     => BlockCount -> m (NewestFirst [] Blund)
 loadBlundsFromTipByDepth d = getTip >>= loadBlundsByDepth d
 
@@ -183,11 +185,12 @@ getHeaderThrow hash =
     errFmt = "getBlockThrow: no block header with hash: "%shortHashF
 
 getBlundThrow
-    :: MonadDBRead m
+    :: forall ctx m . (MonadReporting ctx m, MonadDBRead m)
     => HeaderHash -> m Blund
 getBlundThrow hash = do
     mBlund <- getBlund hash
-    whenJust mBlund (\_ -> reportError $ sformat errFmt hash)
-    maybeThrow (DBMalformed $ sformat errFmt hash) mBlund
+    whenNothing_ mBlund $ reportOrLogE formattedErr $ throw (DBMalformed formattedErr)
+    maybeThrow (DBMalformed formattedErr)  mBlund
   where
+    formattedErr = sformat errFmt hash
     errFmt = "getBlundThrow: no blund with HeaderHash: "%shortHashF
